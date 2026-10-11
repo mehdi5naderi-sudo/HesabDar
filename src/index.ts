@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 interface Env {
   DB: D1Database;
   TELEGRAM_BOT_TOKEN: string;
+  TELEGRAM_OWNER_ID: string;
   WEBHOOK_SECRET: string;
 }
 
@@ -52,6 +53,18 @@ async function sendText(env: Env, chatId: number, text: string): Promise<void> {
   });
 }
 
+async function ensureAccessTable(env: Env): Promise<void> {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS allowed_users (telegram_user_id TEXT PRIMARY KEY, added_at TEXT NOT NULL, added_by TEXT NOT NULL)"
+  ).run();
+}
+
+async function isAuthorized(env: Env, userId: string): Promise<boolean> {
+  const row = await env.DB.prepare("SELECT telegram_user_id FROM allowed_users WHERE telegram_user_id = ?")
+    .bind(userId).first<{ telegram_user_id: string }>();
+  return Boolean(row);
+}
+
 async function getSummary(env: Env, userId: string): Promise<{ deposits: number; withdrawals: number; balance: number }> {
   const row = await env.DB.prepare(
     `SELECT
@@ -76,16 +89,62 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
 
   if (!userId || !text) return;
 
-  // Each Telegram user accesses only their own ledger, keyed by their Telegram ID.
   if (text === "/id") {
     await sendText(env, chatId, `شناسه عددی تلگرام شما: ${userId}`);
     return;
   }
 
+  if (!env.TELEGRAM_OWNER_ID) {
+    await sendText(env, chatId, "تنظیم اولیه کامل نیست؛ مدیر ربات باید Secret با نام TELEGRAM_OWNER_ID را در Cloudflare تنظیم کند.");
+    return;
+  }
+
+  await ensureAccessTable(env);
+  const ownerId = env.TELEGRAM_OWNER_ID.trim();
+  await env.DB.prepare(
+    "INSERT OR IGNORE INTO allowed_users (telegram_user_id, added_at, added_by) VALUES (?, ?, ?)"
+  ).bind(ownerId, new Date().toISOString(), ownerId).run();
+
+  const authorized = await isAuthorized(env, userId);
+  if (!authorized) {
+    await sendText(env, chatId, "⛔ شما هنوز به این حساب مشترک اضافه نشده‌اید. از مدیر حساب بخواهید شناسه تلگرام شما را اضافه کند.");
+    return;
+  }
+
   if (text === "/start") {
-    const summary = await getSummary(env, userId);
+    const summary = await getSummary(env, ownerId);
     await sendText(env, chatId,
-      `سلام! ربات حسابدار آماده است.\n\nجمع واریزها: ${money(summary.deposits)}\nجمع برداشت‌ها: ${money(summary.withdrawals)}\nمانده فعلی: ${money(summary.balance)}\n\nاز سه دکمه زیر استفاده کن.`);
+      `سلام! به حساب مشترک حسابدار خوش آمدی.\n\nجمع واریزها: ${money(summary.deposits)}\nجمع برداشت‌ها: ${money(summary.withdrawals)}\nمانده فعلی: ${money(summary.balance)}\n\nهمه اعضای مجاز به همین اطلاعات دسترسی دارند.`);
+    return;
+  }
+
+  const addMatch = text.match(/^\/add\\s+(\\d+)$/);
+  if (addMatch) {
+    const newUserId = addMatch[1];
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO allowed_users (telegram_user_id, added_at, added_by) VALUES (?, ?, ?)"
+    ).bind(newUserId, new Date().toISOString(), userId).run();
+    await sendText(env, chatId, `✅ شناسه ${newUserId} به حساب مشترک اضافه شد. این فرد همان دسترسی‌های شما به حساب را خواهد داشت.\n\nبرای دسترسی، باید خودش هم یک‌بار ربات را باز کند و /start بفرستد.`);
+    return;
+  }
+
+  const removeMatch = text.match(/^\/remove\\s+(\\d+)$/);
+  if (removeMatch) {
+    const removeUserId = removeMatch[1];
+    if (removeUserId === ownerId) {
+      await sendText(env, chatId, "حذف مدیر اصلی از حساب مجاز نیست.");
+      return;
+    }
+    const result = await env.DB.prepare("DELETE FROM allowed_users WHERE telegram_user_id = ?").bind(removeUserId).run();
+    await sendText(env, chatId, result.meta.changes ? `✅ دسترسی شناسه ${removeUserId} حذف شد.` : "این شناسه در فهرست اعضا نبود.");
+    return;
+  }
+
+  if (text === "/users") {
+    const members = await env.DB.prepare("SELECT telegram_user_id, added_at FROM allowed_users ORDER BY added_at ASC")
+      .all<{ telegram_user_id: string; added_at: string }>();
+    const list = members.results.map((member, i) => `${i + 1}. ${member.telegram_user_id}${member.telegram_user_id === ownerId ? " (مدیر اصلی)" : ""}`).join("\\n");
+    await sendText(env, chatId, "اعضای مجاز حساب مشترک:\\n" + (list || "فهرست خالی است.") + "\\n\\nافزودن: /add شناسه\\nحذف: /remove شناسه");
     return;
   }
 
@@ -102,7 +161,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
   }
 
   if (text === "📊 گزارش" || text === "گزارش") {
-    await sendExcelReport(env, chatId, userId);
+    await sendExcelReport(env, chatId, ownerId);
     return;
   }
 
@@ -126,17 +185,17 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     const now = new Date().toISOString();
     await env.DB.prepare(
       "INSERT INTO transactions (telegram_user_id, kind, amount, created_at) VALUES (?, ?, ?, ?)"
-    ).bind(userId, kind, amount, now).run();
+    ).bind(ownerId, kind, amount, now).run();
     await env.DB.prepare("DELETE FROM bot_state WHERE telegram_user_id = ?").bind(userId).run();
 
-    const summary = await getSummary(env, userId);
+    const summary = await getSummary(env, ownerId);
     const label = kind === "deposit" ? "واریز" : "برداشت";
     await sendText(env, chatId,
       `✅ ${label} ثبت شد: ${money(amount)}\n\nجمع واریزها: ${money(summary.deposits)}\nجمع برداشت‌ها: ${money(summary.withdrawals)}\nمانده فعلی: ${money(summary.balance)}`);
     return;
   }
 
-  await sendText(env, chatId, "از یکی از سه دکمه «واریز»، «برداشت» یا «گزارش» استفاده کن.");
+  await sendText(env, chatId, "از دکمه‌های «واریز»، «برداشت» و «گزارش» استفاده کن. برای مدیریت اعضا: /add شناسه ، /remove شناسه ، /users");
 }
 
 async function sendExcelReport(env: Env, chatId: number, userId: string): Promise<void> {
