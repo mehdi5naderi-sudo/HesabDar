@@ -3,7 +3,6 @@ import * as XLSX from "xlsx";
 interface Env {
   DB: D1Database;
   TELEGRAM_BOT_TOKEN: string;
-  TELEGRAM_OWNER_ID: string;
   WEBHOOK_SECRET: string;
 }
 
@@ -77,21 +76,16 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
 
   if (!userId || !text) return;
 
-  // Anyone can ask for their own numeric ID; only the configured owner can use accounting features.
-  if (text === "/start" || text === "/id") {
-    if (userId !== env.TELEGRAM_OWNER_ID) {
-      await sendText(env, chatId,
-        `شناسه عددی تلگرام شما: ${userId}\nاین شناسه را در متغیر TELEGRAM_OWNER_ID در تنظیمات Cloudflare قرار بده، سپس دوباره /start را بفرست.`);
-      return;
-    }
-    const summary = await getSummary(env, userId);
-    await sendText(env, chatId,
-      `سلام! ربات حسابدار آماده است.\n\nجمع واریزها: ${money(summary.deposits)}\nجمع برداشت‌ها: ${money(summary.withdrawals)}\nمانده فعلی: ${money(summary.balance)}\n\nاز سه دکمه زیر استفاده کن.`);
+  // Each Telegram user accesses only their own ledger, keyed by their Telegram ID.
+  if (text === "/id") {
+    await sendText(env, chatId, `شناسه عددی تلگرام شما: ${userId}`);
     return;
   }
 
-  if (userId !== env.TELEGRAM_OWNER_ID) {
-    await sendText(env, chatId, "این ربات خصوصی است. برای راه‌اندازی، دستور /id را بفرست و شناسه خودت را در تنظیمات ربات ثبت کن.");
+  if (text === "/start") {
+    const summary = await getSummary(env, userId);
+    await sendText(env, chatId,
+      `سلام! ربات حسابدار آماده است.\n\nجمع واریزها: ${money(summary.deposits)}\nجمع برداشت‌ها: ${money(summary.withdrawals)}\nمانده فعلی: ${money(summary.balance)}\n\nاز سه دکمه زیر استفاده کن.`);
     return;
   }
 
