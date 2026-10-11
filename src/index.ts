@@ -79,8 +79,7 @@ async function updateBalanceMessage(env: Env, chatId: number, userId: string, ow
       await telegram(env, "editMessageText", {
         chat_id: chatId,
         message_id: saved.message_id,
-        text,
-        reply_markup: { inline_keyboard: [] }
+        text
       });
       return;
     } catch {}
