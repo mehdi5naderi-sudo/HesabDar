@@ -60,12 +60,17 @@ async function telegram(env: Env, method: string, body: Record<string, unknown>)
 
 async function currentMenu(env: Env, chatId: number) {
   // In private chats, chat ID equals the user's Telegram ID. Never reveal the shared balance to non-members.
-  const userId = String(chatId);
-  if (!(await isAuthorized(env, userId))) return menu();
-  const ownerId = await getOwnerId(env);
-  if (!ownerId) return menu();
-  const summary = await getSummary(env, ownerId);
-  return menu(summary.balance);
+  try {
+    const userId = String(chatId);
+    if (!(await isAuthorized(env, userId))) return menu();
+    const ownerId = await getOwnerId(env);
+    if (!ownerId) return menu();
+    const summary = await getSummary(env, ownerId);
+    return menu(summary.balance);
+  } catch {
+    // Keep basic commands working before the database tables have been initialized.
+    return menu();
+  }
 }
 
 async function sendText(env: Env, chatId: number, text: string): Promise<void> {
