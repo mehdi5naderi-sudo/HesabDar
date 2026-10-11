@@ -328,7 +328,7 @@ export default {
       const webhookUrl = `${url.origin}/telegram/${env.WEBHOOK_SECRET}`;
       const result = await telegram(env, "setWebhook", {
         url: webhookUrl,
-        allowed_updates: ["message"],
+        allowed_updates: ["message", "callback_query"],
         drop_pending_updates: false
       });
       return Response.json({ ok: true, webhook: webhookUrl, telegram: result.result });
