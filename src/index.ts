@@ -118,7 +118,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  const addMatch = text.match(/^\/add\\s+(\\d+)$/);
+  const addMatch = text.match(/^\/add\s+(\d+)$/);
   if (addMatch) {
     const newUserId = addMatch[1];
     await env.DB.prepare(
@@ -128,7 +128,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  const removeMatch = text.match(/^\/remove\\s+(\\d+)$/);
+  const removeMatch = text.match(/^\/remove\s+(\d+)$/);
   if (removeMatch) {
     const removeUserId = removeMatch[1];
     if (removeUserId === ownerId) {
@@ -143,8 +143,8 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
   if (text === "/users") {
     const members = await env.DB.prepare("SELECT telegram_user_id, added_at FROM allowed_users ORDER BY added_at ASC")
       .all<{ telegram_user_id: string; added_at: string }>();
-    const list = members.results.map((member, i) => `${i + 1}. ${member.telegram_user_id}${member.telegram_user_id === ownerId ? " (مدیر اصلی)" : ""}`).join("\\n");
-    await sendText(env, chatId, "اعضای مجاز حساب مشترک:\\n" + (list || "فهرست خالی است.") + "\\n\\nافزودن: /add شناسه\\nحذف: /remove شناسه");
+    const list = members.results.map((member, i) => `${i + 1}. ${member.telegram_user_id}${member.telegram_user_id === ownerId ? " (مدیر اصلی)" : ""}`).join("\n");
+    await sendText(env, chatId, "اعضای مجاز حساب مشترک:\n" + (list || "فهرست خالی است.") + "\n\nافزودن: /add شناسه\nحذف: /remove شناسه");
     return;
   }
 
