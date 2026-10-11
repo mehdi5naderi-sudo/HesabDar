@@ -236,14 +236,14 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  const transactionMatch = text.match(/^(واریز|برداشت)\\s+([\\d۰-۹٠-٩٬،,]+)\\s+(.+)$/u);
+  const transactionMatch = text.match(/^(واریز|برداشت)\s+([\d۰-۹٠-٩٬،,]+)\s+(.+)$/u);
   if (transactionMatch) {
     const kind = transactionMatch[1] === "واریز" ? "deposit" : "withdrawal";
     const normalizedAmount = digitsToEnglish(transactionMatch[2]);
     const amount = Number(normalizedAmount);
     const description = transactionMatch[3].trim().slice(0, 200);
 
-    if (!/^\\d+$/.test(normalizedAmount) || !Number.isSafeInteger(amount) || amount <= 0) {
+    if (!/^\d+$/.test(normalizedAmount) || !Number.isSafeInteger(amount) || amount <= 0) {
       await sendText(env, chatId, "مبلغ معتبر نیست. مثال: واریز ۱۰۰ سیب");
       return;
     }
@@ -262,7 +262,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  if (/^(واریز|برداشت)(\\s|$)/u.test(text)) {
+  if (/^(واریز|برداشت)(\s|$)/u.test(text)) {
     await sendText(env, chatId, "فرمت ثبت: واریز ۱۰۰ سیب\nیا: برداشت ۲۰۰ گندم");
     return;
   }
