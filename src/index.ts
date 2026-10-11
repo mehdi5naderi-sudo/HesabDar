@@ -31,16 +31,11 @@ function signedBalance(value: number): string {
   return value > 0 ? `${amount}+` : value < 0 ? `${amount}-` : "۰";
 }
 
-function menuForBalance(balance?: number) {
-  return {
-    keyboard: [
-      [{ text: balance === undefined ? "💰 موجودی" : `💰 موجودی: ${signedBalance(balance)}` }],
-      [{ text: "📊 گزارش اکسل" }]
-    ],
-    resize_keyboard: true,
-    is_persistent: true
-  };
-}
+const MENU = {
+  keyboard: [[{ text: "📊 گزارش اکسل" }]],
+  resize_keyboard: true,
+  is_persistent: true
+};
 
 function digitsToEnglish(value: string): string {
   return value
@@ -61,29 +56,44 @@ async function telegram(env: Env, method: string, body: Record<string, unknown>)
 }
 
 async function sendText(env: Env, chatId: number, text: string): Promise<void> {
-  let balance: number | undefined;
-  try {
-    const ownerId = await getOwnerId(env);
-    if (ownerId && await isAuthorized(env, String(chatId))) {
-      balance = (await getSummary(env, ownerId)).balance;
-    }
-  } catch {}
   await telegram(env, "sendMessage", {
     chat_id: chatId,
     text,
-    reply_markup: menuForBalance(balance)
+    reply_markup: MENU
   });
 }
 
-async function refreshBalanceKeyboard(env: Env, chatId: number): Promise<void> {
-  let balance = 0;
-  const ownerId = await getOwnerId(env);
-  if (ownerId) balance = (await getSummary(env, ownerId)).balance;
-  await telegram(env, "sendMessage", {
+async function updateBalanceMessage(env: Env, chatId: number, userId: string, ownerId: string): Promise<void> {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS balance_messages (telegram_user_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL)"
+  ).run();
+
+  const balance = (await getSummary(env, ownerId)).balance;
+  const text = `💰 موجودی فعلی\n\n${signedBalance(balance)} تومان`;
+  const saved = await env.DB.prepare(
+    "SELECT message_id FROM balance_messages WHERE telegram_user_id = ?"
+  ).bind(userId).first<{ message_id: number }>();
+
+  if (saved?.message_id) {
+    try {
+      await telegram(env, "editMessageText", {
+        chat_id: chatId,
+        message_id: saved.message_id,
+        text,
+        reply_markup: { inline_keyboard: [] }
+      });
+      return;
+    } catch {}
+  }
+
+  const sent = await telegram(env, "sendMessage", {
     chat_id: chatId,
-    text: "\u2060",
-    reply_markup: menuForBalance(balance)
+    text,
+    reply_markup: MENU
   });
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO balance_messages (telegram_user_id, chat_id, message_id) VALUES (?, ?, ?)"
+  ).bind(userId, String(chatId), sent.result.message_id).run();
 }
 
 async function ensureAccessTable(env: Env): Promise<void> {
@@ -227,7 +237,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
   }
 
   if (text.startsWith("💰 موجودی")) {
-    await refreshBalanceKeyboard(env, chatId);
+    await updateBalanceMessage(env, chatId, userId, ownerId);
     return;
   }
 
@@ -256,9 +266,8 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
       "INSERT INTO transactions (telegram_user_id, kind, amount, created_at, description) VALUES (?, ?, ?, ?, ?)"
     ).bind(ownerId, kind, amount, new Date().toISOString(), description).run();
 
-    // Telegram updates a persistent reply keyboard only when a message is sent.
-    // The invisible character refreshes the balance button without adding visible chat text.
-    await refreshBalanceKeyboard(env, chatId);
+    // Update the same balance message instead of creating a blank or duplicate message.
+    await updateBalanceMessage(env, chatId, userId, ownerId);
     return;
   }
 
