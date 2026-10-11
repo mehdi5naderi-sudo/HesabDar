@@ -1,0 +1,8 @@
+name = "hesabdar-telegram-bot"
+main = "src/index.ts"
+compatibility_date = "2026-10-11"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "hesabdar-db"
+database_id = "d564c6c1-8b5d-445c-885b-945ad49a4eac"
