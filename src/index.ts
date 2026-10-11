@@ -27,11 +27,9 @@ type TelegramUpdate = {
 };
 
 const MENU = {
-  inline_keyboard: [[
-    { text: "➕ واریز", callback_data: "deposit" },
-    { text: "➖ برداشت", callback_data: "withdrawal" },
-    { text: "📊 گزارش", callback_data: "report" }
-  ]]
+  keyboard: [[{ text: "➕ واریز" }, { text: "➖ برداشت" }, { text: "📊 گزارش" }]],
+  resize_keyboard: true,
+  is_persistent: true
 };
 
 const PENDING_KEY = "hesabdar_pending_";
@@ -69,6 +67,15 @@ async function ensureAccessTable(env: Env): Promise<void> {
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS bot_config (id INTEGER PRIMARY KEY CHECK (id = 1), owner_user_id TEXT NOT NULL, created_at TEXT NOT NULL)"
   ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS bot_state (telegram_user_id TEXT PRIMARY KEY, pending_kind TEXT NOT NULL CHECK (pending_kind IN ('deposit', 'withdrawal')))"
+  ).run();
+  try {
+    await env.DB.prepare("ALTER TABLE bot_state ADD COLUMN pending_reason TEXT").run();
+  } catch {}
+  try {
+    await env.DB.prepare("ALTER TABLE transactions ADD COLUMN description TEXT NOT NULL DEFAULT ''").run();
+  } catch {}
 }
 
 async function getOwnerId(env: Env): Promise<string | null> {
@@ -195,13 +202,13 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
 
   if (text === "➕ واریز" || text === "واریز") {
     await env.DB.prepare("INSERT OR REPLACE INTO bot_state (telegram_user_id, pending_kind) VALUES (?, 'deposit')").bind(userId).run();
-    await sendText(env, chatId, "مبلغ واریز را به تومان وارد کن. مثال: ۵۰۰۰۰۰");
+    await sendText(env, chatId, "این واریز بابت چیست؟ مثلاً حقوق، فروش یا قرض. لطفاً عنوان را بنویس.");
     return;
   }
 
   if (text === "➖ برداشت" || text === "برداشت") {
     await env.DB.prepare("INSERT OR REPLACE INTO bot_state (telegram_user_id, pending_kind) VALUES (?, 'withdrawal')").bind(userId).run();
-    await sendText(env, chatId, "مبلغ برداشت را به تومان وارد کن. مثال: ۲۰۰۰۰۰");
+    await sendText(env, chatId, "این برداشت بابت چیست؟ مثلاً خرید، قبض یا هزینه خانه. لطفاً عنوان را بنویس.");
     return;
   }
 
@@ -210,10 +217,21 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  const pending = await env.DB.prepare("SELECT pending_kind FROM bot_state WHERE telegram_user_id = ?")
-    .bind(userId).first<{ pending_kind: string }>();
+  const pending = await env.DB.prepare("SELECT pending_kind, pending_reason FROM bot_state WHERE telegram_user_id = ?")
+    .bind(userId).first<{ pending_kind: string; pending_reason: string | null }>();
 
   if (pending?.pending_kind === "deposit" || pending?.pending_kind === "withdrawal") {
+    if (pending.pending_reason === null || pending.pending_reason === undefined) {
+      if (!text.trim()) {
+        await sendText(env, chatId, "لطفاً بابت واریز یا برداشت را بنویس.");
+        return;
+      }
+      await env.DB.prepare("UPDATE bot_state SET pending_reason = ? WHERE telegram_user_id = ?")
+        .bind(text.trim().slice(0, 200), userId).run();
+      await sendText(env, chatId, "حالا مبلغ را به تومان وارد کن. مثال: ۵۰۰۰۰۰");
+      return;
+    }
+
     const normalized = digitsToEnglish(text);
     if (!/^\d+$/.test(normalized)) {
       await sendText(env, chatId, "لطفاً فقط مبلغ را به عدد وارد کن؛ مثلاً ۵۰۰۰۰۰");
@@ -227,16 +245,17 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     }
 
     const kind = pending.pending_kind;
+    const description = pending.pending_reason;
     const now = new Date().toISOString();
     await env.DB.prepare(
-      "INSERT INTO transactions (telegram_user_id, kind, amount, created_at) VALUES (?, ?, ?, ?)"
-    ).bind(ownerId, kind, amount, now).run();
+      "INSERT INTO transactions (telegram_user_id, kind, amount, created_at, description) VALUES (?, ?, ?, ?, ?)"
+    ).bind(ownerId, kind, amount, now, description).run();
     await env.DB.prepare("DELETE FROM bot_state WHERE telegram_user_id = ?").bind(userId).run();
 
     const summary = await getSummary(env, ownerId);
     const label = kind === "deposit" ? "واریز" : "برداشت";
     await sendText(env, chatId,
-      `✅ ${label} ثبت شد: ${money(amount)}\n\nجمع واریزها: ${money(summary.deposits)}\nجمع برداشت‌ها: ${money(summary.withdrawals)}\nمانده فعلی: ${money(summary.balance)}`);
+      `✅ ${label} ثبت شد: ${money(amount)}\nبابت: ${description}\n\nجمع واریزها: ${money(summary.deposits)}\nجمع برداشت‌ها: ${money(summary.withdrawals)}\nمانده فعلی: ${money(summary.balance)}`);
     return;
   }
 
@@ -245,12 +264,12 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
 
 async function sendExcelReport(env: Env, chatId: number, userId: string): Promise<void> {
   const rows = await env.DB.prepare(
-    "SELECT id, kind, amount, created_at FROM transactions WHERE telegram_user_id = ? ORDER BY id ASC"
-  ).bind(userId).all<{ id: number; kind: string; amount: number; created_at: string }>();
+    "SELECT id, kind, amount, created_at, description FROM transactions WHERE telegram_user_id = ? ORDER BY id ASC"
+  ).bind(userId).all<{ id: number; kind: string; amount: number; created_at: string; description?: string }>();
 
   let balance = 0;
   const sheetRows: (string | number)[][] = [
-    ["شماره", "تاریخ و ساعت", "نوع تراکنش", "واریز (تومان)", "برداشت (تومان)", "مانده (تومان)"]
+    ["شماره", "تاریخ و ساعت", "نوع تراکنش", "بابت", "واریز (تومان)", "برداشت (تومان)", "مانده (تومان)"]
   ];
 
   let deposits = 0;
@@ -268,6 +287,7 @@ async function sendExcelReport(env: Env, chatId: number, userId: string): Promis
       Number(row.id),
       new Date(row.created_at).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" }),
       isDeposit ? "واریز" : "برداشت",
+      row.description ?? "",
       isDeposit ? Number(row.amount) : 0,
       isDeposit ? 0 : Number(row.amount),
       balance
@@ -287,7 +307,7 @@ async function sendExcelReport(env: Env, chatId: number, userId: string): Promis
 
   const workbook = XLSX.utils.book_new();
   const ledger = XLSX.utils.aoa_to_sheet(sheetRows);
-  ledger["!cols"] = [{ wch: 10 }, { wch: 24 }, { wch: 18 }, { wch: 20 }, { wch: 20 }, { wch: 20 }];
+  ledger["!cols"] = [{ wch: 10 }, { wch: 24 }, { wch: 18 }, { wch: 28 }, { wch: 20 }, { wch: 20 }, { wch: 20 }];
   XLSX.utils.book_append_sheet(workbook, ledger, "گردش حساب");
   XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(summaryRows), "خلاصه حساب");
 
