@@ -26,13 +26,21 @@ type TelegramUpdate = {
   callback_query?: TelegramCallbackQuery;
 };
 
-const MENU = {
-  keyboard: [[{ text: "➕ واریز" }, { text: "➖ برداشت" }, { text: "📊 گزارش" }]],
-  resize_keyboard: true,
-  is_persistent: true
-};
+function signedBalance(value: number): string {
+  const amount = new Intl.NumberFormat("fa-IR").format(Math.abs(value));
+  return value > 0 ? `${amount}+` : value < 0 ? `${amount}-` : "۰";
+}
 
-const PENDING_KEY = "hesabdar_pending_";
+function menuForBalance(balance?: number) {
+  return {
+    keyboard: [
+      [{ text: balance === undefined ? "💰 موجودی" : `💰 موجودی: ${signedBalance(balance)}` }],
+      [{ text: "📊 گزارش اکسل" }]
+    ],
+    resize_keyboard: true,
+    is_persistent: true
+  };
+}
 
 function digitsToEnglish(value: string): string {
   return value
@@ -53,10 +61,28 @@ async function telegram(env: Env, method: string, body: Record<string, unknown>)
 }
 
 async function sendText(env: Env, chatId: number, text: string): Promise<void> {
+  let balance: number | undefined;
+  try {
+    const ownerId = await getOwnerId(env);
+    if (ownerId && await isAuthorized(env, String(chatId))) {
+      balance = (await getSummary(env, ownerId)).balance;
+    }
+  } catch {}
   await telegram(env, "sendMessage", {
     chat_id: chatId,
     text,
-    reply_markup: MENU
+    reply_markup: menuForBalance(balance)
+  });
+}
+
+async function refreshBalanceKeyboard(env: Env, chatId: number): Promise<void> {
+  let balance = 0;
+  const ownerId = await getOwnerId(env);
+  if (ownerId) balance = (await getSummary(env, ownerId)).balance;
+  await telegram(env, "sendMessage", {
+    chat_id: chatId,
+    text: "\u2060",
+    reply_markup: menuForBalance(balance)
   });
 }
 
@@ -200,66 +226,48 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  if (text === "➕ واریز" || text === "واریز") {
-    await env.DB.prepare("INSERT OR REPLACE INTO bot_state (telegram_user_id, pending_kind) VALUES (?, 'deposit')").bind(userId).run();
-    await sendText(env, chatId, "این واریز بابت چیست؟ مثلاً حقوق، فروش یا قرض. لطفاً عنوان را بنویس.");
+  if (text.startsWith("💰 موجودی")) {
+    await refreshBalanceKeyboard(env, chatId);
     return;
   }
 
-  if (text === "➖ برداشت" || text === "برداشت") {
-    await env.DB.prepare("INSERT OR REPLACE INTO bot_state (telegram_user_id, pending_kind) VALUES (?, 'withdrawal')").bind(userId).run();
-    await sendText(env, chatId, "این برداشت بابت چیست؟ مثلاً خرید، قبض یا هزینه خانه. لطفاً عنوان را بنویس.");
-    return;
-  }
-
-  if (text === "📊 گزارش" || text === "گزارش") {
+  if (text === "📊 گزارش اکسل" || text === "📊 گزارش" || text === "گزارش") {
     await sendExcelReport(env, chatId, ownerId);
     return;
   }
 
-  const pending = await env.DB.prepare("SELECT pending_kind, pending_reason FROM bot_state WHERE telegram_user_id = ?")
-    .bind(userId).first<{ pending_kind: string; pending_reason: string | null }>();
+  const transactionMatch = text.match(/^(واریز|برداشت)\\s+([\\d۰-۹٠-٩٬،,]+)\\s+(.+)$/u);
+  if (transactionMatch) {
+    const kind = transactionMatch[1] === "واریز" ? "deposit" : "withdrawal";
+    const normalizedAmount = digitsToEnglish(transactionMatch[2]);
+    const amount = Number(normalizedAmount);
+    const description = transactionMatch[3].trim().slice(0, 200);
 
-  if (pending?.pending_kind === "deposit" || pending?.pending_kind === "withdrawal") {
-    if (pending.pending_reason === null || pending.pending_reason === undefined) {
-      if (!text.trim()) {
-        await sendText(env, chatId, "لطفاً بابت واریز یا برداشت را بنویس.");
-        return;
-      }
-      await env.DB.prepare("UPDATE bot_state SET pending_reason = ? WHERE telegram_user_id = ?")
-        .bind(text.trim().slice(0, 200), userId).run();
-      await sendText(env, chatId, "حالا مبلغ را به تومان وارد کن. مثال: ۵۰۰۰۰۰");
+    if (!/^\\d+$/.test(normalizedAmount) || !Number.isSafeInteger(amount) || amount <= 0) {
+      await sendText(env, chatId, "مبلغ معتبر نیست. مثال: واریز ۱۰۰ سیب");
+      return;
+    }
+    if (!description) {
+      await sendText(env, chatId, "عنوان را هم بنویس. مثال: برداشت ۲۰۰ گندم");
       return;
     }
 
-    const normalized = digitsToEnglish(text);
-    if (!/^\d+$/.test(normalized)) {
-      await sendText(env, chatId, "لطفاً فقط مبلغ را به عدد وارد کن؛ مثلاً ۵۰۰۰۰۰");
-      return;
-    }
-
-    const amount = Number(normalized);
-    if (!Number.isSafeInteger(amount) || amount <= 0) {
-      await sendText(env, chatId, "مبلغ باید عدد صحیح و بیشتر از صفر باشد. دوباره وارد کن.");
-      return;
-    }
-
-    const kind = pending.pending_kind;
-    const description = pending.pending_reason;
-    const now = new Date().toISOString();
     await env.DB.prepare(
       "INSERT INTO transactions (telegram_user_id, kind, amount, created_at, description) VALUES (?, ?, ?, ?, ?)"
-    ).bind(ownerId, kind, amount, now, description).run();
-    await env.DB.prepare("DELETE FROM bot_state WHERE telegram_user_id = ?").bind(userId).run();
+    ).bind(ownerId, kind, amount, new Date().toISOString(), description).run();
 
-    const summary = await getSummary(env, ownerId);
-    const label = kind === "deposit" ? "واریز" : "برداشت";
-    await sendText(env, chatId,
-      `✅ ${label} ثبت شد: ${money(amount)}\nبابت: ${description}\n\nجمع واریزها: ${money(summary.deposits)}\nجمع برداشت‌ها: ${money(summary.withdrawals)}\nمانده فعلی: ${money(summary.balance)}`);
+    // Telegram updates a persistent reply keyboard only when a message is sent.
+    // The invisible character refreshes the balance button without adding visible chat text.
+    await refreshBalanceKeyboard(env, chatId);
     return;
   }
 
-  await sendText(env, chatId, "از دکمه‌های «واریز»، «برداشت» و «گزارش» استفاده کن. برای مدیریت اعضا: /add شناسه ، /remove شناسه ، /users");
+  if (/^(واریز|برداشت)(\\s|$)/u.test(text)) {
+    await sendText(env, chatId, "فرمت ثبت: واریز ۱۰۰ سیب\nیا: برداشت ۲۰۰ گندم");
+    return;
+  }
+
+  await sendText(env, chatId, "برای ثبت، یک خط بنویس: واریز ۱۰۰ سیب یا برداشت ۲۰۰ گندم. برای گزارش از دکمه پایین استفاده کن.\nمدیریت اعضا: /add شناسه، /remove شناسه، /users");
 }
 
 async function sendExcelReport(env: Env, chatId: number, userId: string): Promise<void> {
