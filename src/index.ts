@@ -147,6 +147,10 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
 
   const addMatch = text.match(/^\/add\s+(\d+)$/);
   if (addMatch) {
+    if (userId !== ownerId) {
+      await sendText(env, chatId, "⛔ فقط مدیر اصلی می‌تواند عضو جدید اضافه کند.");
+      return;
+    }
     const newUserId = addMatch[1];
     await env.DB.prepare(
       "INSERT OR IGNORE INTO allowed_users (telegram_user_id, added_at, added_by) VALUES (?, ?, ?)"
@@ -157,6 +161,10 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
 
   const removeMatch = text.match(/^\/remove\s+(\d+)$/);
   if (removeMatch) {
+    if (userId !== ownerId) {
+      await sendText(env, chatId, "⛔ فقط مدیر اصلی می‌تواند دسترسی اعضا را حذف کند.");
+      return;
+    }
     const removeUserId = removeMatch[1];
     if (removeUserId === ownerId) {
       await sendText(env, chatId, "حذف مدیر اصلی از حساب مجاز نیست.");
