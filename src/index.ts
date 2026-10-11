@@ -13,15 +13,25 @@ type TelegramMessage = {
   text?: string;
 };
 
+type TelegramCallbackQuery = {
+  id: string;
+  from: { id: number; first_name?: string };
+  message?: TelegramMessage;
+  data?: string;
+};
+
 type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 };
 
 const MENU = {
-  keyboard: [[{ text: "➕ واریز" }, { text: "➖ برداشت" }, { text: "📊 گزارش" }]],
-  resize_keyboard: true,
-  is_persistent: true
+  inline_keyboard: [[
+    { text: "➕ واریز", callback_data: "deposit" },
+    { text: "➖ برداشت", callback_data: "withdrawal" },
+    { text: "📊 گزارش", callback_data: "report" }
+  ]]
 };
 
 const PENDING_KEY = "hesabdar_pending_";
