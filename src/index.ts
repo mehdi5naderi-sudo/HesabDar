@@ -26,13 +26,8 @@ type TelegramUpdate = {
   callback_query?: TelegramCallbackQuery;
 };
 
-function signedBalance(value: number): string {
-  const amount = new Intl.NumberFormat("fa-IR").format(Math.abs(value));
-  return value > 0 ? `${amount}+` : value < 0 ? `${amount}-` : "۰";
-}
-
 const MENU = {
-  keyboard: [[{ text: "📊 گزارش اکسل" }]],
+  keyboard: [[{ text: "💰 موجودی" }, { text: "📊 گزارش اکسل" }]],
   resize_keyboard: true,
   is_persistent: true
 };
@@ -61,38 +56,6 @@ async function sendText(env: Env, chatId: number, text: string): Promise<void> {
     text,
     reply_markup: MENU
   });
-}
-
-async function updateBalanceMessage(env: Env, chatId: number, userId: string, ownerId: string): Promise<void> {
-  await env.DB.prepare(
-    "CREATE TABLE IF NOT EXISTS balance_messages (telegram_user_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL)"
-  ).run();
-
-  const balance = (await getSummary(env, ownerId)).balance;
-  const text = `💰 موجودی فعلی\n\n${signedBalance(balance)} تومان`;
-  const saved = await env.DB.prepare(
-    "SELECT message_id FROM balance_messages WHERE telegram_user_id = ?"
-  ).bind(userId).first<{ message_id: number }>();
-
-  if (saved?.message_id) {
-    try {
-      await telegram(env, "editMessageText", {
-        chat_id: chatId,
-        message_id: saved.message_id,
-        text
-      });
-      return;
-    } catch {}
-  }
-
-  const sent = await telegram(env, "sendMessage", {
-    chat_id: chatId,
-    text,
-    reply_markup: MENU
-  });
-  await env.DB.prepare(
-    "INSERT OR REPLACE INTO balance_messages (telegram_user_id, chat_id, message_id) VALUES (?, ?, ?)"
-  ).bind(userId, String(chatId), sent.result.message_id).run();
 }
 
 async function ensureAccessTable(env: Env): Promise<void> {
@@ -235,8 +198,9 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  if (text.startsWith("💰 موجودی")) {
-    await updateBalanceMessage(env, chatId, userId, ownerId);
+  if (text === "💰 موجودی" || text.startsWith("💰 موجودی")) {
+    const summary = await getSummary(env, ownerId);
+    await sendText(env, chatId, `💰 مانده فعلی: ${money(summary.balance)}`);
     return;
   }
 
@@ -265,8 +229,6 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
       "INSERT INTO transactions (telegram_user_id, kind, amount, created_at, description) VALUES (?, ?, ?, ?, ?)"
     ).bind(ownerId, kind, amount, new Date().toISOString(), description).run();
 
-    // Update the same balance message instead of creating a blank or duplicate message.
-    await updateBalanceMessage(env, chatId, userId, ownerId);
     return;
   }
 
