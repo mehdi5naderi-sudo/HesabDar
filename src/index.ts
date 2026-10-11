@@ -3,7 +3,6 @@ import * as XLSX from "xlsx";
 interface Env {
   DB: D1Database;
   TELEGRAM_BOT_TOKEN: string;
-  TELEGRAM_OWNER_ID: string;
   WEBHOOK_SECRET: string;
 }
 
@@ -57,6 +56,15 @@ async function ensureAccessTable(env: Env): Promise<void> {
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS allowed_users (telegram_user_id TEXT PRIMARY KEY, added_at TEXT NOT NULL, added_by TEXT NOT NULL)"
   ).run();
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS bot_config (id INTEGER PRIMARY KEY CHECK (id = 1), owner_user_id TEXT NOT NULL, created_at TEXT NOT NULL)"
+  ).run();
+}
+
+async function getOwnerId(env: Env): Promise<string | null> {
+  const row = await env.DB.prepare("SELECT owner_user_id FROM bot_config WHERE id = 1")
+    .first<{ owner_user_id: string }>();
+  return row?.owner_user_id ?? null;
 }
 
 async function isAuthorized(env: Env, userId: string): Promise<boolean> {
@@ -94,13 +102,32 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  if (!env.TELEGRAM_OWNER_ID) {
-    await sendText(env, chatId, "تنظیم اولیه کامل نیست؛ مدیر ربات باید Secret با نام TELEGRAM_OWNER_ID را در Cloudflare تنظیم کند.");
+  await ensureAccessTable(env);
+
+  if (text === "/claim") {
+    const now = new Date().toISOString();
+    // Atomic first-claim-wins: only one user can create the singleton owner row.
+    await env.DB.prepare(
+      "INSERT OR IGNORE INTO bot_config (id, owner_user_id, created_at) VALUES (1, ?, ?)"
+    ).bind(userId, now).run();
+    const ownerId = await getOwnerId(env);
+    if (ownerId === userId) {
+      await env.DB.prepare(
+        "INSERT OR IGNORE INTO allowed_users (telegram_user_id, added_at, added_by) VALUES (?, ?, ?)"
+      ).bind(userId, now, userId).run();
+      await sendText(env, chatId, "✅ شما مدیر اولیه حسابدار شدید. از این به بعد می‌توانید حساب مشترک را مدیریت کنید و با دستور /add شناسه، اعضا را اضافه کنید.");
+    } else {
+      await sendText(env, chatId, "⛔ مدیر اولیه قبلاً تعیین شده است؛ امکان تصاحب دوباره مدیریت وجود ندارد.");
+    }
     return;
   }
 
-  await ensureAccessTable(env);
-  const ownerId = env.TELEGRAM_OWNER_ID.trim();
+  const ownerId = await getOwnerId(env);
+  if (!ownerId) {
+    await sendText(env, chatId, "مدیر هنوز تعیین نشده است. اگر این ربات را برای حساب خود راه‌اندازی می‌کنید، دستور /claim را بفرستید. فقط اولین نفر می‌تواند مدیر اولیه شود؛ لینک ربات را خصوصی نگه دارید.");
+    return;
+  }
+
   await env.DB.prepare(
     "INSERT OR IGNORE INTO allowed_users (telegram_user_id, added_at, added_by) VALUES (?, ?, ?)"
   ).bind(ownerId, new Date().toISOString(), ownerId).run();
