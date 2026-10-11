@@ -26,11 +26,19 @@ type TelegramUpdate = {
   callback_query?: TelegramCallbackQuery;
 };
 
-const MENU = {
-  keyboard: [[{ text: "💰 موجودی" }, { text: "📊 گزارش اکسل" }]],
-  resize_keyboard: true,
-  is_persistent: true
-};
+function signedBalance(value: number): string {
+  const amount = new Intl.NumberFormat("fa-IR").format(Math.abs(value));
+  return value > 0 ? `${amount}+` : value < 0 ? `${amount}-` : "۰";
+}
+
+function menu(balance?: number) {
+  const balanceLabel = balance === undefined ? "💰 موجودی" : `💰 ${signedBalance(balance)} تومان`;
+  return {
+    keyboard: [[{ text: balanceLabel }, { text: "📊 گزارش اکسل" }]],
+    resize_keyboard: true,
+    is_persistent: true
+  };
+}
 
 function digitsToEnglish(value: string): string {
   return value
@@ -50,12 +58,41 @@ async function telegram(env: Env, method: string, body: Record<string, unknown>)
   return result;
 }
 
+async function currentMenu(env: Env, chatId: number) {
+  // In private chats, chat ID equals the user's Telegram ID. Never reveal the shared balance to non-members.
+  const userId = String(chatId);
+  if (!(await isAuthorized(env, userId))) return menu();
+  const ownerId = await getOwnerId(env);
+  if (!ownerId) return menu();
+  const summary = await getSummary(env, ownerId);
+  return menu(summary.balance);
+}
+
 async function sendText(env: Env, chatId: number, text: string): Promise<void> {
   await telegram(env, "sendMessage", {
     chat_id: chatId,
     text,
-    reply_markup: MENU
+    reply_markup: await currentMenu(env, chatId)
   });
+}
+
+async function refreshBalanceKeyboard(env: Env, chatId: number, ownerId: string): Promise<void> {
+  const summary = await getSummary(env, ownerId);
+  const sent = await telegram(env, "sendMessage", {
+    chat_id: chatId,
+    text: "\u2060",
+    reply_markup: menu(summary.balance)
+  });
+
+  // The message is only a vehicle for updating Telegram's reply keyboard; remove it immediately.
+  try {
+    await telegram(env, "deleteMessage", {
+      chat_id: chatId,
+      message_id: sent.result.message_id
+    });
+  } catch (error) {
+    console.error("Could not delete temporary keyboard-refresh message", error);
+  }
 }
 
 async function ensureAccessTable(env: Env): Promise<void> {
@@ -198,9 +235,8 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
     return;
   }
 
-  if (text === "💰 موجودی" || text.startsWith("💰 موجودی")) {
-    const summary = await getSummary(env, ownerId);
-    await sendText(env, chatId, `💰 مانده فعلی: ${money(summary.balance)}`);
+  if (text === "💰 موجودی" || text.startsWith("💰 ")) {
+    await refreshBalanceKeyboard(env, chatId, ownerId);
     return;
   }
 
@@ -229,6 +265,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
       "INSERT INTO transactions (telegram_user_id, kind, amount, created_at, description) VALUES (?, ?, ?, ?, ?)"
     ).bind(ownerId, kind, amount, new Date().toISOString(), description).run();
 
+    await refreshBalanceKeyboard(env, chatId, ownerId);
     return;
   }
 
