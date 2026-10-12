@@ -58,6 +58,41 @@ async function sendText(env: Env, chatId: number, text: string): Promise<void> {
   });
 }
 
+async function updateBalanceMessage(env: Env, chatId: number, userId: string, ownerId: string): Promise<void> {
+  await env.DB.prepare(
+    "CREATE TABLE IF NOT EXISTS balance_messages (telegram_user_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, message_id INTEGER NOT NULL)"
+  ).run();
+
+  const summary = await getSummary(env, ownerId);
+  const balanceText = `💰 مانده فعلی: ${money(summary.balance)}`;
+  const saved = await env.DB.prepare(
+    "SELECT message_id FROM balance_messages WHERE telegram_user_id = ?"
+  ).bind(userId).first<{ message_id: number }>();
+
+  if (saved?.message_id) {
+    try {
+      await telegram(env, "editMessageText", {
+        chat_id: chatId,
+        message_id: saved.message_id,
+        text: balanceText,
+        reply_markup: MENU
+      });
+      return;
+    } catch (error) {
+      console.error("Could not edit saved balance message; creating replacement", error);
+    }
+  }
+
+  const sent = await telegram(env, "sendMessage", {
+    chat_id: chatId,
+    text: balanceText,
+    reply_markup: MENU
+  });
+  await env.DB.prepare(
+    "INSERT OR REPLACE INTO balance_messages (telegram_user_id, chat_id, message_id) VALUES (?, ?, ?)"
+  ).bind(userId, String(chatId), sent.result.message_id).run();
+}
+
 async function ensureAccessTable(env: Env): Promise<void> {
   await env.DB.prepare(
     "CREATE TABLE IF NOT EXISTS allowed_users (telegram_user_id TEXT PRIMARY KEY, added_at TEXT NOT NULL, added_by TEXT NOT NULL)"
@@ -199,7 +234,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
   }
 
   if (text === "💰 موجودی" || text.startsWith("💰 ")) {
-    // Do not add a balance message to the chat.
+    await updateBalanceMessage(env, chatId, userId, ownerId);
     return;
   }
 
@@ -228,6 +263,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
       "INSERT INTO transactions (telegram_user_id, kind, amount, created_at, description) VALUES (?, ?, ?, ?, ?)"
     ).bind(ownerId, kind, amount, new Date().toISOString(), description).run();
 
+    await updateBalanceMessage(env, chatId, userId, ownerId);
     return;
   }
 
