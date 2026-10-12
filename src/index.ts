@@ -66,20 +66,22 @@ async function updateBalanceMessage(env: Env, chatId: number, userId: string, ow
   const summary = await getSummary(env, ownerId);
   const balanceText = `💰 مانده فعلی: ${money(summary.balance)}`;
   const saved = await env.DB.prepare(
-    "SELECT message_id FROM balance_messages WHERE telegram_user_id = ?"
-  ).bind(userId).first<{ message_id: number }>();
+    "SELECT message_id, chat_id FROM balance_messages WHERE telegram_user_id = ?"
+  ).bind(userId).first<{ message_id: number; chat_id: string }>();
 
   if (saved?.message_id) {
     try {
+      // editMessageText accepts inline keyboards only; do not pass the reply keyboard here.
       await telegram(env, "editMessageText", {
-        chat_id: chatId,
+        chat_id: Number(saved.chat_id || chatId),
         message_id: saved.message_id,
-        text: balanceText,
-        reply_markup: MENU
+        text: balanceText
       });
       return;
     } catch (error) {
-      console.error("Could not edit saved balance message; creating replacement", error);
+      // Never create a replacement just because editing failed, or duplicate balance messages accumulate.
+      console.error("Could not edit saved balance message; not creating a duplicate", error);
+      return;
     }
   }
 
