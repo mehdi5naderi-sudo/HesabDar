@@ -199,8 +199,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
   }
 
   if (text === "💰 موجودی" || text.startsWith("💰 ")) {
-    const summary = await getSummary(env, ownerId);
-    await sendText(env, chatId, `💰 مانده فعلی: ${money(summary.balance)}`);
+    // Do not add a balance message to the chat.
     return;
   }
 
