@@ -11,9 +11,17 @@ type TelegramMessage = {
   text?: string;
 };
 
+type TelegramCallbackQuery = {
+  id: string;
+  from: { id: number };
+  data?: string;
+  message?: TelegramMessage;
+};
+
 type TelegramUpdate = {
   update_id: number;
   message?: TelegramMessage;
+  callback_query?: TelegramCallbackQuery;
 };
 
 // Keep the balance label centralized so the existing message can be edited in place.
@@ -66,6 +74,9 @@ async function getSummary(env: Env, userId: string): Promise<{ deposits: number;
  */
 async function refreshBalanceMessage(env: Env, chatId: number, userId: string, balance: number): Promise<void> {
   const text = `${BALANCE_TEXT}: ${money(balance)}`;
+  const replyMarkup = {
+    inline_keyboard: [[{ text: "🔄 نمایش آخرین مانده", callback_data: "show_balance" }]]
+  };
 
   const saved = await env.DB.prepare(
     "SELECT message_id FROM balance_messages WHERE telegram_user_id = ?"
@@ -76,7 +87,8 @@ async function refreshBalanceMessage(env: Env, chatId: number, userId: string, b
       await telegram(env, "editMessageText", {
         chat_id: chatId,
         message_id: saved.message_id,
-        text
+        text,
+        reply_markup: replyMarkup
       });
       return;
     } catch (error) {
@@ -93,7 +105,11 @@ async function refreshBalanceMessage(env: Env, chatId: number, userId: string, b
     }
   }
 
-  const sent = await sendText(env, chatId, text);
+  const sent = await telegram(env, "sendMessage", {
+    chat_id: chatId,
+    text,
+    reply_markup: replyMarkup
+  });
   const messageId = sent?.result?.message_id;
   if (messageId) {
     await env.DB.prepare(
@@ -144,7 +160,7 @@ export default {
 
     if (url.pathname === `/setup/${env.WEBHOOK_SECRET}` && request.method === "GET") {
       const webhookUrl = `${url.origin}/telegram/${env.WEBHOOK_SECRET}`;
-      const result = await telegram(env, "setWebhook", { url: webhookUrl, allowed_updates: ["message"] });
+      const result = await telegram(env, "setWebhook", { url: webhookUrl, allowed_updates: ["message", "callback_query"] });
       return Response.json({ ok: true, webhook: webhookUrl, telegram: result.result });
     }
 
@@ -155,6 +171,20 @@ export default {
       } catch {
         return new Response("Bad JSON", { status: 400 });
       }
+      if (update.callback_query) {
+        const callback = update.callback_query;
+        try {
+          await telegram(env, "answerCallbackQuery", { callback_query_id: callback.id });
+          if (callback.data === "show_balance" && callback.message) {
+            const userId = String(callback.from.id);
+            const summary = await getSummary(env, userId);
+            await refreshBalanceMessage(env, callback.message.chat.id, userId, summary.balance);
+          }
+        } catch (error) {
+          console.error("Balance button failed", error);
+        }
+      }
+
       if (update.message) {
         try {
           await handleMessage(env, update.message);
