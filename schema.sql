@@ -1,4 +1,7 @@
-CREATE TABLE IF NOT EXISTS transactions (
+DROP TABLE IF EXISTS transactions;
+DROP TABLE IF EXISTS balance_messages;
+
+CREATE TABLE transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   telegram_user_id TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('deposit', 'withdrawal')),
@@ -6,10 +9,9 @@ CREATE TABLE IF NOT EXISTS transactions (
   created_at TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_transactions_owner_date
-ON transactions (telegram_user_id, created_at, id);
+CREATE INDEX idx_transactions_user ON transactions (telegram_user_id, id);
 
-CREATE TABLE IF NOT EXISTS bot_state (
+CREATE TABLE balance_messages (
   telegram_user_id TEXT PRIMARY KEY,
-  pending_kind TEXT NOT NULL CHECK (pending_kind IN ('deposit', 'withdrawal'))
+  message_id INTEGER NOT NULL
 );
