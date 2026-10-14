@@ -16,6 +16,7 @@ type TelegramUpdate = {
   message?: TelegramMessage;
 };
 
+// Keep the balance label centralized so the existing message can be edited in place.
 const BALANCE_TEXT = "💰 مانده فعلی";
 
 function digitsToEnglish(value: string): string {
