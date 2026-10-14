@@ -1,7 +1,5 @@
-DROP TABLE IF EXISTS transactions;
-DROP TABLE IF EXISTS balance_messages;
-
-CREATE TABLE transactions (
+-- Safe, repeatable schema setup. Do not drop tables: they contain the accounting history.
+CREATE TABLE IF NOT EXISTS transactions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   telegram_user_id TEXT NOT NULL,
   kind TEXT NOT NULL CHECK (kind IN ('deposit', 'withdrawal')),
@@ -9,9 +7,9 @@ CREATE TABLE transactions (
   created_at TEXT NOT NULL
 );
 
-CREATE INDEX idx_transactions_user ON transactions (telegram_user_id, id);
+CREATE INDEX IF NOT EXISTS idx_transactions_user ON transactions (telegram_user_id, id);
 
-CREATE TABLE balance_messages (
+CREATE TABLE IF NOT EXISTS balance_messages (
   telegram_user_id TEXT PRIMARY KEY,
   message_id INTEGER NOT NULL
 );
