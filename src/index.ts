@@ -22,7 +22,7 @@ function digitsToEnglish(value: string): string {
   return value
     .replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d).toString())
     .replace(/[٠-٩]/g, (d) => "٠١٢٣٤٥٦٧٨٩".indexOf(d).toString())
-    .replace(/[٬،,\\s]/g, "");
+    .replace(/[٬،,\s]/g, "");
 }
 
 function money(value: number): string {
