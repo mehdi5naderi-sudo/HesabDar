@@ -1,5 +1,3 @@
-import * as XLSX from "xlsx";
-
 interface Env {
   DB: D1Database;
   TELEGRAM_BOT_TOKEN: string;
@@ -58,18 +56,18 @@ async function getSummary(env: Env, userId: string): Promise<{ deposits: number;
   return { deposits, withdrawals, balance: deposits - withdrawals };
 }
 
-async function ensureBalanceMessage(env: Env, chatId: number, userId: string, balance: number): Promise<void> {
+async function refreshBalanceMessage(env: Env, chatId: number, userId: string, balance: number): Promise<void> {
   const text = `${BALANCE_TEXT}: ${money(balance)}`;
+
   const saved = await env.DB.prepare(
     "SELECT message_id FROM balance_messages WHERE telegram_user_id = ?"
   ).bind(userId).first<{ message_id: number }>();
 
   if (saved?.message_id) {
     try {
-      await telegram(env, "editMessageText", { chat_id: chatId, message_id: saved.message_id, text });
-      return;
+      await telegram(env, "deleteMessage", { chat_id: chatId, message_id: saved.message_id });
     } catch (error) {
-      console.error("editMessageText failed", error);
+      console.error("deleteMessage failed", error);
     }
   }
 
@@ -115,7 +113,7 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
   ).bind(userId, kind, amount, new Date().toISOString()).run();
 
   const summary = await getSummary(env, userId);
-  await ensureBalanceMessage(env, chatId, userId, summary.balance);
+  await refreshBalanceMessage(env, chatId, userId, summary.balance);
 }
 
 export default {
