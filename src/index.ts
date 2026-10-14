@@ -22,7 +22,7 @@ function digitsToEnglish(value: string): string {
   return value
     .replace(/[۰-۹]/g, (d) => "۰۱۲۳۴۵۶۷۸۹".indexOf(d).toString())
     .replace(/[٠-٩]/g, (d) => "٠١٢٣٤٥٦٧٨٩".indexOf(d).toString())
-    .replace(/[٬،,\s]/g, "");
+    .replace(/[٬،,\\s]/g, "");
 }
 
 function money(value: number): string {
@@ -36,7 +36,9 @@ async function telegram(env: Env, method: string, body: Record<string, unknown>)
     body: JSON.stringify(body)
   });
   const result = await response.json<any>();
-  if (!response.ok || !result.ok) throw new Error(`Telegram ${method} failed`);
+  if (!response.ok || !result.ok) {
+    throw new Error(`Telegram ${method} failed: ${result.description ?? response.statusText}`);
+  }
   return result;
 }
 
@@ -56,6 +58,11 @@ async function getSummary(env: Env, userId: string): Promise<{ deposits: number;
   return { deposits, withdrawals, balance: deposits - withdrawals };
 }
 
+/**
+ * Keep one balance message in the chat: edit it in place whenever possible.
+ * Only send a replacement if Telegram says the saved message no longer exists.
+ * Other API errors must not trigger another message, because that could create duplicates.
+ */
 async function refreshBalanceMessage(env: Env, chatId: number, userId: string, balance: number): Promise<void> {
   const text = `${BALANCE_TEXT}: ${money(balance)}`;
 
@@ -65,17 +72,32 @@ async function refreshBalanceMessage(env: Env, chatId: number, userId: string, b
 
   if (saved?.message_id) {
     try {
-      await telegram(env, "deleteMessage", { chat_id: chatId, message_id: saved.message_id });
+      await telegram(env, "editMessageText", {
+        chat_id: chatId,
+        message_id: saved.message_id,
+        text
+      });
+      return;
     } catch (error) {
-      console.error("deleteMessage failed", error);
+      const reason = String(error);
+      if (reason.includes("message is not modified")) {
+        return;
+      }
+
+      // Only recreate the message when Telegram confirms the old message is gone.
+      if (!/message to edit not found|message_id_invalid|message can't be edited|message to edit is not found/i.test(reason)) {
+        console.error("editMessageText failed; not sending a duplicate balance message", error);
+        return;
+      }
     }
   }
 
   const sent = await sendText(env, chatId, text);
-  if (sent?.result?.message_id) {
+  const messageId = sent?.result?.message_id;
+  if (messageId) {
     await env.DB.prepare(
       "INSERT OR REPLACE INTO balance_messages (telegram_user_id, message_id) VALUES (?, ?)"
-    ).bind(userId, sent.result.message_id).run();
+    ).bind(userId, messageId).run();
   }
 }
 
@@ -86,17 +108,13 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
   if (!userId || !text) return;
 
   if (text === "/start") {
-    await sendText(env, chatId, "سلام! بنویس: واریز 1000 یا برداشت 500");
+    // Do not send a welcome/help message; keep the chat compact.
     return;
   }
 
   const match = text.match(/^(واریز|برداشت)\s+([\d۰-۹٠-٩٬،,\s]+)$/u);
   if (!match) {
-    if (/^(واریز|برداشت)(\s|$)/u.test(text)) {
-      await sendText(env, chatId, "فرمت: واریز 1000 یا برداشت 500");
-    } else {
-      await sendText(env, chatId, "بنویس: واریز 1000 یا برداشت 500");
-    }
+    // Ignore unrelated messages and malformed entries instead of cluttering the chat.
     return;
   }
 
@@ -104,7 +122,6 @@ async function handleMessage(env: Env, message: TelegramMessage): Promise<void> 
   const normalized = digitsToEnglish(match[2]);
   const amount = Number(normalized);
   if (!/^\d+$/.test(normalized) || !Number.isSafeInteger(amount) || amount <= 0) {
-    await sendText(env, chatId, "مبلغ معتبر نیست. مثال: واریز 1000");
     return;
   }
 
@@ -138,8 +155,11 @@ export default {
         return new Response("Bad JSON", { status: 400 });
       }
       if (update.message) {
-        try { await handleMessage(env, update.message); }
-        catch (error) { console.error("Update failed", error); }
+        try {
+          await handleMessage(env, update.message);
+        } catch (error) {
+          console.error("Update failed", error);
+        }
       }
       return new Response("OK");
     }
